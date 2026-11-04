@@ -12,17 +12,17 @@
  * */
 namespace fresco::component {
 
-class Button : public fresco::Component {
- private:
-  std::string text = "";
+    class Button : public fresco::Component {
+        private:
+            std::string text = "";
 
- public:
-  // Default constructor
-  Button() = default;
+        public:
+        // Default constructor
+        Button() = default;
 
-  // constructor — initializes the geometry
-  Button(const std::string& text, float x, float y, float h, float w)
-      : Component(x, y, height, width), text(text) {}
-};
+        // constructor — initializes the geometry
+        Button(const std::string& text, float x, float y, float h, float w)
+            : Component(x, y, height, width), text(text) {}
+    };
 
 }  // namespace fresco::component

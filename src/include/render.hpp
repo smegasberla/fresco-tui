@@ -118,8 +118,11 @@ namespace fresco::render {
 
 class Screen {
   // First screen primitive
-  //
-  //
+  
+  public:
+    void enableRawMode();
+    void disableRawMode(); 
+  
 };
 
 }  // namespace fresco::render
