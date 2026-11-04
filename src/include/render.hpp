@@ -123,9 +123,22 @@ class Screen {
     void enableRawMode();
     // Disable raw mode for the terminal (cross-os)
     void disableRawMode();
-    // Tells the size of the terminal.
+    // Tells the size of the terminal (cross-platform).
     void size(int& row, int& col) const;
-  
+    // alt screen + hide cursor + raw mode
+    void enter();
+    // reverse of enter in reversed order
+    void leave();
+
+  private:
+    // True while enter() owns the terminal, so leave() never undoes a state
+    // this object never set (and a second Screen does not undo the first)
+    bool entered = false;
+
+    // True while raw mode is on, so disableRawMode() only restores the modes
+    // that that this object saved
+    bool raw_on = false;
+
 };
 
 }  // namespace fresco::render
