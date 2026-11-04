@@ -1,5 +1,7 @@
 #pragma once
 #include <iostream>
+#include <cstdint>
+#include <vector>
 
 #include "../include/common.hpp"
 #include "../include/components.hpp"
@@ -117,31 +119,112 @@ constexpr auto CLEAR_SCREEN = "\033[2J";
 
 namespace fresco::render {
 
-class Screen {
-  
-  public:
-    // Enable raw mode for the terminal (cross-os)
-    void enableRawMode();
-    // Disable raw mode for the terminal (cross-os)
-    void disableRawMode();
-    // Tells the size of the terminal (cross-platform).
-    void size(int& row, int& col) const;
-    // alt screen + hide cursor + raw mode
-    void enter();
-    // reverse of enter in reversed order
-    void leave();
-    // Clears the screen
-    void clearScreen();
+  // Text attributes, one bit each, numbered in SGR order so flush() can walk
+  // the bits and emit the matching code without a lookup table.
+  // The value in the comment is the SGR parameter each bit corresponds to.
+   enum Attr : uint16_t {
+    Bold = 1u << 0,            // 1  = increased intensity
+    Dim = 1u << 1,             // 2  = decreased intensity (faint)
+    Italic = 1u << 2,          // 3  = italic
+    Underline = 1u << 3,       // 4  = underline
+    Blink = 1u << 4,           // 5  = slow blink
+    Reverse = 1u << 5,         // 7  = swap foreground and background (inverse)
+    Hidden = 1u << 6,          // 8  = conceal the text
+    Strikethrough = 1u << 7,   // 9  = crossed out
+    // Not modelled yet, add when something can emit them:
+    //   RapidBlink = 6, DoubleUnderline = 21, Framed = 51, Encircled = 52,
+    //   Overline = 53, Superscript = 73, Subscript = 74
+  };
 
-  private:
-    // True while enter() owns the terminal, so leave() never undoes a state
-    // this object never set (and a second Screen does not undo the first)
-    bool entered = false;
+  // So attrs = Bold | Underline; stays a uint16_t instead of an int
+  inline constexpr uint16_t operator|(Attr a, Attr b) {
+    return static_cast<uint16_t>(static_cast<uint16_t>(a) | static_cast<uint16_t>(b));
+  }
 
-    // True while raw mode is on, so disableRawMode() only restores the modes
-    // that that this object saved
-    bool raw_on = false;
+  inline constexpr uint32_t DEFAULT_COLOR = 0xFFFFFFFF;
 
-};
+  struct Style {
+
+    // flush() compares the current pen with the next cell's style to decide if
+    // any SGR code has to be emitted. The defaulted comparison does that field
+    // by field, and all three fields are plain numbers, so it is free.
+    bool operator==(const Style&) const = default;
+    uint32_t fg = DEFAULT_COLOR;
+    uint32_t bg = DEFAULT_COLOR;
+    uint16_t attrs = 0;
+
+  };
+
+  struct Cell {
+
+    // Two cells are equal when they show the same character with the same style
+    // flush() compares the cell it already drew with the new one to know if
+    // that position has to be repainted at all
+    bool operator==(const Cell&) const = default;
+    // Code point
+    char32_t cp = U' ';
+    // Style
+    Style s;
+
+  };
+
+  class Screen {
+    
+    public:
+      // Enable raw mode for the terminal (cross-os)
+      void enableRawMode();
+      // Disable raw mode for the terminal (cross-os)
+      void disableRawMode();
+      // Tells the size of the terminal (cross-platform).
+      void size(int& row, int& col) const;
+      // alt screen + hide cursor + raw mode
+      void enter();
+      // reverse of enter in reversed order
+      void leave();
+      // Clears the screen
+      void clearScreen();
+      // Resizes the back buffer to rows x cols cells and blanks every cell
+      // Writes nothing: the terminal is untouched, so it works before enter()
+      // and in tests without a pty
+      void resize(int rows, int cols);
+      // Read-only access to the cell at (row, col)
+      // Out of range it returns a shared blank cell instead of crashing, so a
+      // caller can read a neighbour while drawing at the edge without checking
+      // put() stays the only writer, this never hands out a writable cell
+      const Cell& at(int row, int col) const;
+      void put(int row, int col, char32_t ch, Style s);
+
+    private:
+      // True while enter() owns the terminal, so leave() never undoes a state
+      // this object never set (and a second Screen does not undo the first)
+      bool entered = false;
+
+      // True while raw mode is on, so disableRawMode() only restores the modes
+      // that that this object saved
+      bool raw_on = false;
+
+      // Size of the back buffer in cells (not pixels, not characters).
+      // resize() is the only place that changes them, so they always match
+      // cells.size() == rows * cols
+      int rows = 0;
+      int cols = 0;
+
+      // One flat row-major array of cells: index = row * cols + col
+      // Contiguous on purpose, flush() and clear() walk it linearly, and one
+      // allocation per resize is enough. Empty until resize() runs
+      std::vector<Cell> cells;
+
+      // Offset of (row, col) inside cells. No bounds check on purpose: the
+      // callers (put, at) clip first, so this stays one multiplication
+      std::size_t index(int row, int col) const;
+
+      // True when (row, col) is inside the buffer. put() and at() both ask this
+      // one function, so writing and reading can never disagree about the edges
+      bool inside(int row, int col) const;
+
+      // Sets rows/cols and refills the whole array with blanks (Cell{})
+      // Only resize() calls it, so this is the single place that allocates
+      void assign(int new_rows, int new_cols);
+  };
 
 }  // namespace fresco::render
