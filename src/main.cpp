@@ -6,9 +6,6 @@ namespace ansi = fresco::ansi;
 
 int main() {
 
-    /*
-    Raw mode works!
-
     fresco::render::Screen screen;
 
     screen.enableRawMode();
@@ -22,8 +19,5 @@ int main() {
 
     screen.disableRawMode();
     return 0; 
-    */
-
-    
 
 }

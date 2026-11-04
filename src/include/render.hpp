@@ -117,10 +117,11 @@ constexpr auto LEAVE_ALT_SCREEN = "\033[?1049l";
 namespace fresco::render {
 
 class Screen {
-  // First screen primitive
   
   public:
+    // Enable raw mode for the terminal (cross-os)
     void enableRawMode();
+    // Disable raw mode for the terminal (cross-os)
     void disableRawMode(); 
   
 };
