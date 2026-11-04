@@ -122,7 +122,9 @@ class Screen {
     // Enable raw mode for the terminal (cross-os)
     void enableRawMode();
     // Disable raw mode for the terminal (cross-os)
-    void disableRawMode(); 
+    void disableRawMode();
+    // Tells the size of the terminal.
+    void size(int& row, int& col) const;
   
 };
 

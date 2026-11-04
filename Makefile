@@ -17,7 +17,15 @@ LDLIBS      ?=
 
 BINARY      := $(BIN_DIR)/$(TARGET)
 
-.PHONY: all build clean run
+TEST_DIR    := tests
+TEST_BUILD  := $(BUILD_DIR)/tests
+TEST_SRC    := $(wildcard $(TEST_DIR)/*.cpp)
+TEST_BIN    := $(TEST_BUILD)/run
+# everything except main.cpp: the test binary brings its own main
+TEST_LIB    := $(filter-out src/main.cpp,$(SRC))
+TEST_DEPS   := $(wildcard $(TEST_DIR)/*.hpp) $(wildcard src/include/*.hpp)
+
+.PHONY: all build clean run test
 
 all: build
 
@@ -33,6 +41,15 @@ $(BUILD_DIR)/%.o: %.cpp
 
 run: build
 	./$(BINARY)
+
+# make test            run all tests
+# make test ARGS=raw   run only tests whose name contains "raw"
+test: $(TEST_BIN)
+	./$(TEST_BIN) $(ARGS)
+
+$(TEST_BIN): $(TEST_SRC) $(TEST_LIB) $(TEST_DEPS)
+	@mkdir -p $(@D)
+	$(CXX) $(CPPFLAGS) -I$(TEST_DIR) $(CXXFLAGS) $^ -o $@
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
