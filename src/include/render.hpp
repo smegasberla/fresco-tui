@@ -108,6 +108,7 @@ constexpr auto SHOW_CURSOR = "\033[?25h";
 
 constexpr auto ENTER_ALT_SCREEN = "\033[?1049h";
 constexpr auto LEAVE_ALT_SCREEN = "\033[?1049l";
+constexpr auto CLEAR_SCREEN = "\033[2J";
 
 // Move cursor:  "\033[<row>;<col>H"  — use your own formatting,
 // or add a helper:  inline char* cursorMove(int row, int col) { … }
@@ -129,6 +130,8 @@ class Screen {
     void enter();
     // reverse of enter in reversed order
     void leave();
+    // Clears the screen
+    void clearScreen();
 
   private:
     // True while enter() owns the terminal, so leave() never undoes a state

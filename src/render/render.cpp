@@ -240,3 +240,25 @@ void render::Screen::leave() {
 
 
 }
+
+void render::Screen::clearScreen() {
+
+     // If we didn't enter, we do nothing
+    if (!entered)
+        return;
+
+    // Declare variables for columns and rows    
+    std::string out;
+
+    // Append the ansi codes
+    out.append(ansi::RESET);
+    out.append(ansi::CLEAR_SCREEN);
+    out.append(ansi::CURSOR_HOME);
+
+    // We write the escape codes to stdout
+    std::cout.write(out.data(), out.size());
+
+    // We immedeately flush stdout
+    std::cout.flush();
+
+}
