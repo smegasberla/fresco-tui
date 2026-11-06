@@ -89,3 +89,64 @@ TEST(raw_mode_is_a_noop_without_a_terminal) {
   SKIP("POSIX-only");
 #endif
 }
+
+TEST(raw_mode_restore_puts_back_the_whole_saved_state) {
+#if OS_CHECK_UNIX
+  int slave = open_pty_slave();
+  if (slave < 0) SKIP("could not open a pty");
+
+  struct termios before;
+  CHECK(tcgetattr(slave, &before) == 0);
+  CHECK((before.c_lflag & IEXTEN) != 0); // the guard the test relies on below
+
+  {
+    StdinSwap swap(slave);
+    fresco::render::Screen screen;
+    screen.enableRawMode();
+
+    // Someone else changes a flag we never touch. Handing the terminal back must
+    // undo that too: the saved state is written back whole, not patched
+    struct termios other;
+    CHECK(tcgetattr(STDIN_FILENO, &other) == 0);
+    other.c_lflag &= ~IEXTEN;
+    CHECK(tcsetattr(STDIN_FILENO, TCSAFLUSH, &other) == 0);
+
+    screen.disableRawMode();
+  }
+
+  struct termios after;
+  CHECK(tcgetattr(slave, &after) == 0);
+  CHECK((after.c_lflag & IEXTEN) != 0); // the flag the other process cleared
+  CHECK(after.c_lflag == before.c_lflag);
+  CHECK(after.c_iflag == before.c_iflag);
+  CHECK(after.c_oflag == before.c_oflag);
+  CHECK(after.c_cflag == before.c_cflag);
+  close(slave);
+#else
+  SKIP("Pty test is POSIX-only");
+#endif
+}
+
+TEST(raw_mode_twice_still_restores_the_cooked_terminal) {
+#if OS_CHECK_UNIX
+  int slave = open_pty_slave();
+  if (slave < 0) SKIP("could not open a pty");
+
+  {
+    StdinSwap swap(slave);
+    fresco::render::Screen screen;
+    // The second enable must not overwrite the snapshot with raw attributes
+    screen.enableRawMode();
+    screen.enableRawMode();
+    screen.disableRawMode();
+  }
+
+  struct termios t;
+  CHECK(tcgetattr(slave, &t) == 0);
+  CHECK((t.c_lflag & ICANON) != 0);
+  CHECK((t.c_lflag & ECHO) != 0);
+  close(slave);
+#else
+  SKIP("Pty test is POSIX-only");
+#endif
+}

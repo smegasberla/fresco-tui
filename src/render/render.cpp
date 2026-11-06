@@ -1,6 +1,7 @@
 # include "../include/os_check.hpp"
 # include "../include/render.hpp"
 # include <iostream>
+# include <string>
 
 #if OS_CHECK_UNIX
 #  include <termios.h>
@@ -19,21 +20,34 @@ namespace render = fresco::render;
 
 void render::Screen::enableRawMode() {
 #if OS_CHECK_UNIX
-    struct termios raw;
 
-    // Get the ccurrent terminal attributes
-    // STDIN_FILENO = Standart for the input data stream (keyboard only)
-    tcgetattr(STDIN_FILENO, &raw);
+    // Already raw: keep the first snapshot. Saving a second time would store the
+    // raw attributes and then "restore" those
+    if (raw_on)
+        return;
+
+    // tcgetattr fails when stdin is not a terminal (a pipe, a file, under make),
+    // and then there is nothing to save: raw mode simply stays off
+    if (tcgetattr(STDIN_FILENO, &saved_termios) != 0)
+        return;
+
+    struct termios raw = saved_termios;
 
     // Apply local flags
     // ICANON = Disable canon mode && ECHO = Disable printing
     raw.c_lflag &= ~(ICANON | ECHO);
 
-    // Apply new aattributes immedeately
     // TCSAFLUSH = Tells the OS how to handle the apply of the new attributes
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0)
+        return;
+
+    // Only now is there something to undo, so only now is the flag raised
     raw_on = true;
 #elif OS_CHECK_WINDOWS
+
+    // Same rule as POSIX: a second enable must not overwrite the saved modes
+    if (raw_on)
+        return;
 
     // Get the handles of the console: input is the keyboard, output is the screen
     g_in  = GetStdHandle(STD_INPUT_HANDLE);
@@ -71,15 +85,17 @@ void render::Screen::enableRawMode() {
 void render::Screen::disableRawMode() {
     if (!raw_on) return;
     #if OS_CHECK_UNIX
-        struct termios orig;
-        tcgetattr(STDIN_FILENO, &orig);
-        orig.c_lflag |= (ICANON | ECHO);
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
+        // Write back exactly what enableRawMode() found. Reading the attributes
+        // now and turning ICANON and ECHO on would keep whatever else changed in
+        // the meantime, and would undo only those two flags
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
     #elif OS_CHECK_WINDOWS
         // Put back the console modes we saved in enableRawMode()
         SetConsoleMode(g_in, g_in_mode);
         SetConsoleMode(g_out, g_out_mode);
     #endif
+    // A failed restore is not retried: the terminal is being handed back, and a
+    // second attempt would only repeat the same error
     raw_on = false;
 }
 
@@ -96,8 +112,6 @@ void render::Screen::size(int& row, int& col) const {
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
         row = ws.ws_row;
         col = ws.ws_col;
-    } else {
-        perror("ioctl failed");
     }
 
 
@@ -114,12 +128,8 @@ void render::Screen::size(int& row, int& col) const {
         // +1 because Right and Bottom are inclusive coordinates
         col = csbi.srWindow.Right - csbi.srWindow.Left + 1;
         row = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    } else {
-        // Keep the 24x80 fallback set at the top of the function
-        // GetLastError() is the Windows equivalent of errno
-        printf("GetConsoleScreenBufferInfo failed. Error code: %lu\n", GetLastError());
     }
-
+    
 #endif
 
 }
@@ -346,3 +356,234 @@ void render::Screen::put(int row, int col, char32_t ch, render::Style s) {
     cells[index(row, col)] = Cell{ch, s};
 
 } 
+
+void render::Screen::write(int row, int col, std::string_view text, Style s) {
+
+    // text is bytes, Cell::cp is a code point: walk the UTF-8 ourselves and
+    // store one cell per code point. Nothing is sent to the terminal here
+    std::size_t i = 0;
+
+    while (i < text.size()) {
+
+        const auto lead = static_cast<unsigned char>(text[i]);
+
+        // Length and the bits already decoded come from the lead byte:
+        // 0xxxxxxx 1 byte, 110xxxxx 2, 1110xxxx 3, 11110xxx 4
+        std::size_t len;
+        char32_t cp;
+
+        if (lead < 0x80) {
+            len = 1;
+            cp = lead;
+        } else if ((lead & 0xE0) == 0xC0) {
+            len = 2;
+            cp = lead & 0x1F;
+        } else if ((lead & 0xF0) == 0xE0) {
+            len = 3;
+            cp = lead & 0x0F;
+        } else if ((lead & 0xF8) == 0xF0) {
+            len = 4;
+            cp = lead & 0x07;
+        } else {
+            // Neither ASCII nor a lead byte: the string is broken, so stop
+            // shortcut: the rest is dropped instead of becoming U+FFFD,
+            // upgrade when callers start passing untrusted text
+            break;
+        }
+
+        // Not enough bytes left for the length the lead byte promised: stop
+        // before reading past the end of the view
+        if (i + len > text.size())
+            break;
+
+        // Every following byte must look like 10xxxxxx and carries 6 bits
+        bool valid = true;
+        for (std::size_t k = 1; k < len; ++k) {
+            const auto next = static_cast<unsigned char>(text[i + k]);
+
+            if ((next & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+
+            cp = (cp << 6) | (next & 0x3F);
+        }
+
+        if (!valid)
+            break;
+
+        // Control bytes (\n, \t, \033 and friends) are not printable: a cell
+        // holding one would move the cursor or emit an escape during flush()
+        // and shift the rest of the row. Skip them without taking a column
+        if (cp < 0x20 || cp == 0x7F) {
+            i += len;
+            continue;
+        }
+
+        // put() stores the cell and owns the clipping, so an off-screen row or
+        // column is dropped silently here too. col counts cells, never bytes
+        put(row, col, cp, s);
+
+        ++col;
+        i += len;
+    }
+
+}
+
+// One cell holds a code point, the terminal wants UTF-8 bytes. This is the
+// inverse of the decoder in write(): 1 to 4 bytes, most significant first
+static void append_codepoint(std::string& out, char32_t cp) {
+
+    // put() stores any code point it is given, so a control byte can arrive
+    // here. Emitting it raw would move the cursor or start an escape, and
+    // dropping the cell would shift the rest of the row: show a space instead
+    if (cp < 0x20 || cp == 0x7F || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        cp = U' ';
+
+    if (cp < 0x80) {
+        out += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18));
+        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+
+}
+
+// Turns one Style into a reset plus the SGR codes it needs. The reset comes
+// first because SGR has a code to switch each attribute on but none to switch
+// them all off, so the pen is cleared and rebuilt instead of patched
+// shortcut: a style change costs a reset plus the full new style, not only the
+// difference. Upgrade if profiling says those extra bytes matter
+static void append_style(std::string& out, const render::Style& s) {
+
+    // Parameter for each attribute bit. Not bit + 1: SGR has no code 6, it uses
+    // 7, 8 and 9 for reverse, hidden and strikethrough
+    static constexpr uint16_t param[8] = {1, 2, 3, 4, 5, 7, 8, 9};
+
+    std::string codes;
+
+    for (int bit = 0; bit < 8; ++bit) {
+        if (!(s.attrs & (1u << bit)))
+            continue;
+
+        if (!codes.empty())
+            codes += ';';
+
+        codes += std::to_string(param[bit]);
+    }
+
+    // 24-bit color: 38;2;R;G;B for the foreground, 48;2;R;G;B for the back.
+    // DEFAULT_COLOR is not a real color, it means "leave the terminal as is"
+    if (s.fg != render::DEFAULT_COLOR) {
+        if (!codes.empty())
+            codes += ';';
+
+        codes += "38;2;" + std::to_string((s.fg >> 16) & 0xFF) + ';' +
+                 std::to_string((s.fg >> 8) & 0xFF) + ';' + std::to_string(s.fg & 0xFF);
+    }
+
+    if (s.bg != render::DEFAULT_COLOR) {
+        if (!codes.empty())
+            codes += ';';
+
+        codes += "48;2;" + std::to_string((s.bg >> 16) & 0xFF) + ';' +
+                 std::to_string((s.bg >> 8) & 0xFF) + ';' + std::to_string(s.bg & 0xFF);
+    }
+
+    // Reset always, then the new style only if it asks for anything
+    out += fresco::ansi::RESET;
+
+    if (!codes.empty()) {
+        out += "\033[";
+        out += codes;
+        out += 'm';
+    }
+
+}
+
+std::string render::Screen::frame() const {
+
+    std::string out;
+
+    // Nothing to draw: resize() never ran, so there is no frame at all
+    if (rows <= 0 || cols <= 0)
+        return out;
+
+    // One string for the whole frame, so stdout sees one write instead of one
+    // per cell. 4 bytes is the widest UTF-8 sequence, 32 the escapes around it
+    out.reserve(static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols) * 4 + 32);
+
+    // The frame starts on the default pen, and RESET is what puts it there.
+    // No CURSOR_HOME here: the move that opens row 0 lands on the same cell
+    out += ansi::RESET;
+
+    // What the terminal is currently told to use. Starting at Style{} matches
+    // the RESET above, so a cell with the default style emits no code at all
+    Style pen{};
+
+    for (int row = 0; row < rows; ++row) {
+
+        // Absolute move at the start of each row. Relying on the wrap at the
+        // end of the previous row would put the frame off by a cell as soon as
+        // a wide character, or a terminal that is not exactly cols wide, shows
+        // up on that row
+        out += "\033[";
+        out += std::to_string(row + 1);
+        out += ";1H";
+
+        for (int col = 0; col < cols; ++col) {
+
+            // Bottom-right cell: writing it makes the terminal wrap, and a wrap
+            // on the last row scrolls the whole alt screen up by one line,
+            // which shifts every frame from then on. One skipped cell because
+            // of that, the same trick every full-screen TUI uses
+            if (row == rows - 1 && col == cols - 1)
+                continue;
+
+            const Cell& cell = cells[index(row, col)];
+
+            // Style is a pen: only a change costs bytes, so a run of cells
+            // sharing a style emits one sequence instead of one per cell
+            if (!(cell.s == pen)) {
+                append_style(out, cell.s);
+                pen = cell.s;
+            }
+
+            append_codepoint(out, cell.cp);
+        }
+    }
+
+    // Leave the terminal on the default pen, otherwise whatever prints next
+    // (the shell prompt after leave()) inherits the last cell's colors
+    out += ansi::RESET;
+
+    return out;
+
+}
+
+void render::Screen::flush() {
+
+    if(!entered)
+        return;
+
+    // The frame is built without a terminal, writing it is the only step that
+    // needs one. One write, then one stdout flush: the frame lands at once, so
+    // no partial row is ever visible while the rest is still being built
+    const std::string out = frame();
+
+    if (out.empty())
+        return;
+
+    std::cout.write(out.data(), out.size());
+    std::cout.flush();
+
+}

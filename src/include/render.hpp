@@ -1,7 +1,15 @@
 #pragma once
 #include <iostream>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
+
+#include "os_check.hpp"
+
+#if OS_CHECK_UNIX
+#include <termios.h>
+#endif
 
 #include "../include/common.hpp"
 #include "../include/components.hpp"
@@ -193,6 +201,33 @@ namespace fresco::render {
       // put() stays the only writer, this never hands out a writable cell
       const Cell& at(int row, int col) const;
       void put(int row, int col, char32_t ch, Style s);
+      // Writes text into the buffer starting at (row, col): one cell per code
+      // point, all with the same style. text is bytes and a Cell holds one
+      // code point, so the UTF-8 is decoded here and a 2-4 byte character
+      // takes one column, not one per byte. Control bytes are dropped, so no
+      // escape sequence can reach the terminal through a cell. Nothing wraps:
+      // the row stays the row, and cells off the buffer are dropped by put(),
+      // the same edge rule at() follows for reads. Writes nothing to the
+      // terminal, so it is safe before enter() and in tests without a pty
+      void write(int row, int col, std::string_view text, Style s);
+      // Builds the frame as bytes and hands them back: this is exactly the
+      // payload flush() writes, with no terminal involved. Moves the cursor to
+      // the start of the frame, then walks the buffer linearly, the way cells
+      // is laid out, and encodes each code point back to UTF-8. Style is
+      // treated as a pen: an SGR sequence is emitted only when the next cell's
+      // Style differs from the pen already set, so a run of cells sharing a
+      // style costs one sequence, not one per cell. A cell that already equals
+      // what the terminal shows is skipped, but that needs a copy of the last
+      // frame: until Screen keeps one, every cell is repainted. Rows and cols
+      // are the frame: nothing wraps, and nothing is drawn past the last
+      // column. The very last cell is left alone, because writing it would wrap
+      // and scroll the alt screen. Empty when resize() never ran, so it is safe
+      // before enter() and in tests without a pty
+      std::string frame() const;
+      // Writes frame() to stdout and flushes stdout, so the whole frame lands in
+      // one write instead of one per cell. Does nothing before enter(), because
+      // there is no alt screen to draw into
+      void flush();
 
     private:
       // True while enter() owns the terminal, so leave() never undoes a state
@@ -202,6 +237,13 @@ namespace fresco::render {
       // True while raw mode is on, so disableRawMode() only restores the modes
       // that that this object saved
       bool raw_on = false;
+
+#if OS_CHECK_UNIX
+      // The terminal attributes as they were before enableRawMode() touched
+      // them. disableRawMode() writes this back whole, so a flag changed by
+      // another process in between is restored too instead of guessed at
+      struct termios saved_termios{};
+#endif
 
       // Size of the back buffer in cells (not pixels, not characters).
       // resize() is the only place that changes them, so they always match

@@ -4,6 +4,12 @@
 
 #include "common.hpp"
 
+// draw() only takes a Screen by reference, so a forward declaration is enough
+// here and keeps this header from pulling in the whole renderer
+namespace fresco::render {
+    class Screen;
+}
+
 /*
  *
  * Here we define the declaration of the components classes
@@ -24,7 +30,10 @@ namespace fresco::component {
         public:
             // This won't allow new Component() to compile
             virtual ~Component() = default;
-            virtual void draw() const = 0;
+
+            // Draws the component into the screen's back buffer. Nothing reaches
+            // the terminal until the caller flushes the screen
+            virtual void draw(render::Screen& screen) const = 0;
 
             // Default constructor
             // If we do Button() = default, Button will inherit those defaults
@@ -44,8 +53,15 @@ namespace fresco::component {
         Button() = default;
 
         // constructor — initializes the geometry
+        // h and w are the size to store: naming the base members here instead
+        // would read them before they are set and leave every Button at 0,0
         Button(const std::string& text, float x, float y, float h, float w)
-            : Component(x, y, height, width), text(text) {}
+            : Component(x, y, h, w), text(text) {}
+
+        // Writes text at (x, y) in the default style, clipped to the box width.
+        // Screen clipping still applies on top of that, so a button hanging over
+        // an edge loses the cells that do not fit either
+        void draw(render::Screen& screen) const override;
     };
 
 }  // namespace fresco::component
